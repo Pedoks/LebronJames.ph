@@ -28,10 +28,12 @@ const createUser = async (req, res) => {
     try {
         const { email, password, firstName, lastName } = req.body;
 
+        console.log('Creating user with data:', { ...req.body, password: '[HIDDEN]' });
+
         // Input validation
         if (!email || !password || !firstName || !lastName) {
             return res.status(400).json({ 
-                message: 'All fields are required',
+                message: 'Required fields missing: email, password, firstName, lastName',
                 missingFields: {
                     email: !email,
                     password: !password,
@@ -48,34 +50,61 @@ const createUser = async (req, res) => {
             });
         }
 
-        // Password validation
-        if (!validatePassword(password)) {
+        // Password validation - only for new users or when password is provided
+        if (password && !validatePassword(password)) {
             return res.status(400).json({ 
                 message: 'Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number' 
             });
         }
 
-        // Check if user already exists
-        const existingUser = await User.findOne({ email: email.toLowerCase() });
-        if (existingUser) {
+        // Check if user already exists by email
+        const existingUserByEmail = await User.findOne({ email: email.toLowerCase() });
+        if (existingUserByEmail) {
             return res.status(409).json({ 
                 message: 'An account with this email already exists' 
             });
         }
 
+        // Generate username if not provided
+        let username = req.body.username || email.split('@')[0];
+        
+        // Check if username already exists and make it unique if needed
+        let usernameExists = await User.findOne({ username });
+        let counter = 1;
+        while (usernameExists) {
+            username = `${req.body.username || email.split('@')[0]}${counter}`;
+            usernameExists = await User.findOne({ username });
+            counter++;
+        }
+
         // Hash the password
         const hashedPassword = await bcrypt.hash(password, 12);
 
-        // Create the user
-        const user = await User.create({
-            ...req.body,
+        // Create the user with all provided fields
+        const userData = {
+            firstName,
+            lastName,
             email: email.toLowerCase(),
-            password: hashedPassword
-        });
+            username,
+            password: hashedPassword,
+            type: req.body.type || 'editor',
+            isActive: req.body.isActive !== undefined ? req.body.isActive : true,
+            // Optional fields - only include if provided
+            ...(req.body.age && { age: req.body.age }),
+            ...(req.body.gender && { gender: req.body.gender }),
+            ...(req.body.contactNumber && { contactNumber: req.body.contactNumber }),
+            ...(req.body.address && { address: req.body.address }),
+        };
+
+        console.log('Creating user with final data:', { ...userData, password: '[HIDDEN]' });
+
+        const user = await User.create(userData);
 
         // Remove password from response
         const userResponse = user.toObject();
         delete userResponse.password;
+
+        console.log('User created successfully:', userResponse);
 
         res.status(201).json({
             message: 'User created successfully',
@@ -83,8 +112,20 @@ const createUser = async (req, res) => {
         });
     } catch (error) {
         console.error('Create user error:', error);
+        
         if (error.code === 11000) {
-            res.status(409).json({ message: 'Email already exists' });
+            // Handle duplicate key error
+            const field = Object.keys(error.keyPattern)[0];
+            res.status(409).json({ 
+                message: `${field === 'email' ? 'Email' : 'Username'} already exists` 
+            });
+        } else if (error.name === 'ValidationError') {
+            // Handle mongoose validation errors
+            const validationErrors = Object.values(error.errors).map(err => err.message);
+            res.status(400).json({ 
+                message: 'Validation error',
+                errors: validationErrors
+            });
         } else {
             res.status(500).json({ message: 'Server error while creating user' });
         }
@@ -95,6 +136,8 @@ const updateUser = async (req, res) => {
     try {
         const { id } = req.params;
         
+        console.log('Updating user:', id, 'with data:', { ...req.body, password: req.body.password ? '[HIDDEN]' : undefined });
+
         // Check if user exists
         const existingUser = await User.findById(id);
         if (!existingUser) {
@@ -131,11 +174,32 @@ const updateUser = async (req, res) => {
             }
         }
 
+        // Check for duplicate username
+        if (req.body.username && req.body.username !== existingUser.username) {
+            const usernameExists = await User.findOne({ 
+                username: req.body.username,
+                _id: { $ne: id }
+            });
+            if (usernameExists) {
+                return res.status(409).json({ 
+                    message: 'Username already exists' 
+                });
+            }
+        }
+
+        // Prepare update data
+        const updateData = { ...req.body };
+        if (updateData.email) {
+            updateData.email = updateData.email.toLowerCase();
+        }
+
         const user = await User.findByIdAndUpdate(
             id,
-            { ...req.body, email: req.body.email?.toLowerCase() },
+            updateData,
             { new: true, runValidators: true }
         ).select('-password');
+
+        console.log('User updated successfully:', user);
 
         res.json({
             message: 'User updated successfully',
@@ -143,7 +207,21 @@ const updateUser = async (req, res) => {
         });
     } catch (error) {
         console.error('Update user error:', error);
-        res.status(500).json({ message: 'Server error while updating user' });
+        
+        if (error.code === 11000) {
+            const field = Object.keys(error.keyPattern)[0];
+            res.status(409).json({ 
+                message: `${field === 'email' ? 'Email' : 'Username'} already exists` 
+            });
+        } else if (error.name === 'ValidationError') {
+            const validationErrors = Object.values(error.errors).map(err => err.message);
+            res.status(400).json({ 
+                message: 'Validation error',
+                errors: validationErrors
+            });
+        } else {
+            res.status(500).json({ message: 'Server error while updating user' });
+        }
     }
 };
 
@@ -156,6 +234,7 @@ const deleteUser = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
+        console.log('User deleted successfully:', id);
         res.json({ message: 'User deleted successfully' });
     } catch (error) {
         console.error('Delete user error:', error);
@@ -166,6 +245,8 @@ const deleteUser = async (req, res) => {
 const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
+
+        console.log('Login attempt for email:', email);
 
         // Input validation
         if (!email || !password) {
@@ -210,9 +291,11 @@ const loginUser = async (req, res) => {
                 email: user.email,
                 type: user.type
             },
-            process.env.JWT_SECRET,
+            process.env.JWT_SECRET || 'fallback-secret-key',
             { expiresIn: '24h' }
         );
+
+        console.log('Login successful for user:', user.email);
 
         res.json({
             message: 'Login successful',
@@ -238,5 +321,4 @@ module.exports = {
     updateUser,
     deleteUser,
     loginUser,
-    
 };
