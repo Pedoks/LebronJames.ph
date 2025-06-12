@@ -74,7 +74,7 @@ function Footer() {
               </a>
             </div>
             <p className="text-sm text-[#FDB927]/60">
-              © {new Date().getFullYear()} Lebron Hub. All rights reserved.
+              © {new Date().getFullYear()} Alfred INF226. All rights reserved.
             </p>
           </div>
         </div>
