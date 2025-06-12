@@ -156,7 +156,7 @@ function Navbar() {
         }}
       >
         <User className="w-5 h-5 group-hover:animate-pulse" />
-        <span>Login</span>
+        <span></span>
       </Button>
     </div>
   </div>
